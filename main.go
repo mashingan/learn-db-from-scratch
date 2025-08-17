@@ -16,7 +16,13 @@ func main() {
 	isString := false
 	buffer := ""
 	prompt := "> "
-	var stmt Statement
+	var (
+		stmt Statement
+	)
+	table, err := NewTable[Row]("from-scratch.db")
+	if err != nil {
+		log.Fatal(err)
+	}
 	clearPrompt := func() {
 		buffer = ""
 		prompt = "> "
@@ -36,7 +42,7 @@ func main() {
 				fmt.Println("unknown statement query")
 			} else {
 				fmt.Println("select statement:", statementMap[stmt.kind])
-				execute(&stmt)
+				table.Execute(&stmt)
 			}
 			clear(stmt.row.username[:])
 			clear(stmt.row.email[:])
@@ -44,7 +50,7 @@ func main() {
 			continue
 		}
 		if buffer == "" && strings.HasPrefix(line, ".") {
-			_, cont := handleMetaCommand(line)
+			_, cont := handleMetaCommand(line, table)
 			if !cont {
 				break
 			}
@@ -56,7 +62,7 @@ func main() {
 	}
 }
 
-func handleMetaCommand(cmd string) (MetaCommand, bool) {
+func handleMetaCommand[R any](cmd string, tbl *Table[R]) (MetaCommand, bool) {
 	rcmd := MetaCommandUnrecognized
 	cont := true
 	switch cmd {
@@ -65,13 +71,13 @@ func handleMetaCommand(cmd string) (MetaCommand, bool) {
 		cont = false
 	case ".pages", ".p":
 		rcmd = MetaCommandSuccess
-		for _, page := range pages {
+		for _, page := range tbl.pages {
 			lp := len(page)
 			fmt.Println("total pages length:", lp)
 			rows := binary.LittleEndian.Uint16(page[4:6])
 			for i := 0; i < int(rows); i++ {
 				row := i
-				idpos := 6 + (i * int(rowSize))
+				idpos := 6 + (i * int(tbl.rowSize))
 				unamepos := idpos + 4
 				emailpos := unamepos + 32
 				log.Println("idpos:", idpos)
@@ -120,45 +126,35 @@ func prepareResult(stmt *Statement, bfr string) PrepareKind {
 	return prepare
 }
 
-func executeInsert(stmt *Statement, pages *[][]byte) (int, error) {
+func (tbl *Table[R]) insertRow(stmt *Statement) (int, error) {
 	nullUname := bytes.IndexByte(stmt.row.username[:], '\x00')
 	nullEmail := bytes.IndexByte(stmt.row.email[:], '\x00')
 	fmt.Printf("insert exec row id: %d, username: %s, email: %s\n", stmt.row.id,
 		stmt.row.username[:nullUname], stmt.row.email[:nullEmail])
 	thetable[stmt.row.id] = stmt.row
-	page := []byte{}
-	var pg PageHeader
-	if len(*pages) < 1 {
-		page, pg = newPage(pages)
-	} else {
-		page = (*pages)[len(*pages)-1]
-		pg = readPageHeader(page)
-	}
-	if pg.length+uint16(rowSize) >= pg.size {
-		page, pg = newPage(pages)
-	}
+	page, pg := tbl.GetPage()
 	id := make([]byte, 4)
 	binary.LittleEndian.PutUint32(id, stmt.row.id)
-	idpos := 6 + uint32(pg.rows*uint16(rowSize))
+	idpos := 6 + uint32(pg.rows*uint16(tbl.rowSize))
 	idoff := unsafe.Sizeof(stmt.row.id)
 	binary.LittleEndian.PutUint32(page[idpos:idpos+uint32(idoff)], stmt.row.id)
 	unamepos := idpos + uint32(unsafe.Offsetof(stmt.row.username))
 	copy(page[unamepos:unamepos+uint32(len(stmt.row.username))], stmt.row.username[:])
 	emailpos := idpos + uint32(unsafe.Offsetof(stmt.row.email))
 	copy(page[emailpos:emailpos+uint32(len(stmt.row.email))], stmt.row.email[:])
-	pg.length += uint16(rowSize)
+	pg.length += uint16(tbl.rowSize)
 	binary.LittleEndian.PutUint16(page[2:4], pg.length)
 	pg.rows++
 	binary.LittleEndian.PutUint16(page[4:6], pg.rows)
 	return 1, nil
 }
 
-func executeSelect(_ *Statement, pages [][]byte) []Row {
+func (tbl *Table[R]) selectRow(_ *Statement) []Row {
 	rows := []Row{}
-	for _, page := range pages {
+	for _, page := range tbl.pages {
 		pg := readPageHeader(page)
 		for i := 0; i < int(pg.rows); i++ {
-			idpos := 6 + int(rowSize)*i
+			idpos := 6 + int(tbl.rowSize)*i
 			unamepos := idpos + 4
 			emailpos := unamepos + 32
 			emailsz := 255
@@ -173,16 +169,17 @@ func executeSelect(_ *Statement, pages [][]byte) []Row {
 	return rows
 }
 
-func execute(stmt *Statement) {
+func (tbl *Table[R]) Execute(stmt *Statement) {
 	switch stmt.kind {
 	case StatementInsert:
-		executeInsert(stmt, &pages)
+		tbl.insertRow(stmt)
 	case StatementSelect:
-		for _, row := range executeSelect(stmt, pages) {
+		for _, row := range tbl.selectRow(stmt) {
 			nullUname := bytes.IndexByte(row.username[:], '\x00')
 			nullEmail := bytes.IndexByte(row.email[:], '\x00')
 			fmt.Printf("(%d, %s, %s)\n", row.id,
 				row.username[:nullUname], row.email[:nullEmail])
+
 		}
 	}
 }
@@ -247,7 +244,52 @@ type (
 	PageHeader struct {
 		size, length, rows uint16
 	}
+
+	Page         []byte
+	Table[R any] struct {
+		name    string
+		file    *os.File
+		rows    uint32
+		rowSize uint32
+		pages   [][]byte
+	}
 )
+
+func NewTable[R any](name string) (*Table[R], error) {
+	var row R
+	tbl := Table[R]{
+		name:    name,
+		rowSize: uint32(unsafe.Sizeof(row)),
+	}
+	var err error
+	tbl.file, err = os.Open(name)
+	if err != nil && os.IsNotExist(err) {
+		tbl.file, err = os.Create(name)
+	} else if err != nil {
+		return nil, fmt.Errorf("cannot open table name %s, %v", name, err)
+	}
+	tbl.GetPage()
+	return &tbl, nil
+
+}
+
+func (t *Table[R]) GetPage() (Page, PageHeader) {
+	var (
+		page Page
+		pg   PageHeader
+	)
+	if len(t.pages) < 1 {
+		page, pg = newPage(&t.pages)
+	} else {
+		page = t.pages[len(t.pages)-1]
+		pg = readPageHeader(page)
+	}
+	if pg.length+uint16(t.rowSize) >= pg.size {
+		page, pg = newPage(&t.pages)
+	}
+	return page, pg
+
+}
 
 var (
 	statementMap = map[StatementKind]string{
@@ -255,6 +297,4 @@ var (
 		StatementInsert: "INSERT",
 	}
 	thetable = map[uint32]Row{}
-	pages    = [][]byte{}
-	rowSize  = unsafe.Sizeof(Row{})
 )
