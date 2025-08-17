@@ -120,7 +120,7 @@ func prepareResult(stmt *Statement, bfr string) PrepareKind {
 	return prepare
 }
 
-func executeInsert(stmt *Statement, pages *[][]byte) {
+func executeInsert(stmt *Statement, pages *[][]byte) (int, error) {
 	nullUname := bytes.IndexByte(stmt.row.username[:], '\x00')
 	nullEmail := bytes.IndexByte(stmt.row.email[:], '\x00')
 	fmt.Printf("insert exec row id: %d, username: %s, email: %s\n", stmt.row.id,
@@ -147,9 +147,10 @@ func executeInsert(stmt *Statement, pages *[][]byte) {
 	emailpos := idpos + uint32(unsafe.Offsetof(stmt.row.email))
 	copy(page[emailpos:emailpos+uint32(len(stmt.row.email))], stmt.row.email[:])
 	pg.length += uint16(rowSize)
-	binary.LittleEndian.PutUint16(page[2:4], pg.rows)
+	binary.LittleEndian.PutUint16(page[2:4], pg.length)
 	pg.rows++
 	binary.LittleEndian.PutUint16(page[4:6], pg.rows)
+	return 1, nil
 }
 
 func executeSelect(_ *Statement, pages [][]byte) []Row {
