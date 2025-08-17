@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"strings"
@@ -23,6 +24,12 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	defer func() {
+		if err := table.flushPages(); err != nil {
+			log.Println(err)
+		}
+		table.Close()
+	}()
 	clearPrompt := func() {
 		buffer = ""
 		prompt = "> "
@@ -110,11 +117,11 @@ func prepareResult(stmt *Statement, bfr string) PrepareKind {
 		n, err := fmt.Sscanf(bfr, "insert %d %s %s", &stmt.row.id,
 			&uname, &email)
 
-		buname := unsafe.StringData(uname)
-		stmt.row.username = *(*[32]byte)(unsafe.Pointer(&unsafe.Slice(buname, 32)[0]))
-		stmt.row.email = *(*[255]byte)(unsafe.Pointer(unsafe.StringData(email)))
-		// copy(stmt.row.username[:], []byte(uname))
-		// copy(stmt.row.email[:], []byte(email))
+		// buname := unsafe.StringData(uname)
+		// stmt.row.username = *(*[32]byte)(unsafe.Pointer(&unsafe.Slice(buname, 32)[0]))
+		// stmt.row.email = *(*[255]byte)(unsafe.Pointer(unsafe.StringData(email)))
+		copy(stmt.row.username[:], []byte(uname))
+		copy(stmt.row.email[:], []byte(email))
 		if err != nil {
 			log.Println(err)
 		}
@@ -255,6 +262,31 @@ type (
 	}
 )
 
+func (tbl *Table[R]) fetchDbFile() error {
+	if tbl.file == nil {
+		return nil
+	}
+	pgsz := make([]byte, 2)
+	tbl.file.ReadAt(pgsz, 0)
+	pagesz := binary.LittleEndian.Uint16(pgsz)
+	fstat, err := tbl.file.Stat()
+	if err != nil {
+		return fmt.Errorf("fetchDbFile: %w", err)
+	}
+	tbl.file.Seek(0, io.SeekStart)
+	for i := 0; i*int(pagesz) < int(fstat.Size()); i++ {
+		log.Println("fetch db page:", i+1)
+		page := make([]byte, pagesz)
+		_, err := tbl.file.Read(page)
+		if err != nil {
+			log.Printf("error reading page %d: %v\n", i, err)
+			continue
+		}
+		tbl.pages = append(tbl.pages, page)
+	}
+	return nil
+}
+
 func NewTable[R any](name string) (*Table[R], error) {
 	var row R
 	tbl := Table[R]{
@@ -262,11 +294,13 @@ func NewTable[R any](name string) (*Table[R], error) {
 		rowSize: uint32(unsafe.Sizeof(row)),
 	}
 	var err error
-	tbl.file, err = os.Open(name)
-	if err != nil && os.IsNotExist(err) {
-		tbl.file, err = os.Create(name)
-	} else if err != nil {
-		return nil, fmt.Errorf("cannot open table name %s, %v", name, err)
+	tbl.file, err = os.OpenFile(name, os.O_RDWR|os.O_CREATE, 0o644)
+	if err != nil {
+		return nil, fmt.Errorf("cannot open db file: %w", err)
+	}
+	tbl.file.Seek(0, io.SeekStart)
+	if err := tbl.fetchDbFile(); err != nil {
+		return nil, fmt.Errorf("cannot read db file: %w", err)
 	}
 	tbl.GetPage()
 	return &tbl, nil
@@ -288,7 +322,23 @@ func (t *Table[R]) GetPage() (Page, PageHeader) {
 		page, pg = newPage(&t.pages)
 	}
 	return page, pg
+}
 
+func (t *Table[R]) flushPages() error {
+	t.file.Seek(0, io.SeekStart)
+	for _, page := range t.pages {
+		if _, err := t.file.Write(page); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (t *Table[R]) Close() error {
+	if t.file == nil {
+		return nil
+	}
+	return t.file.Close()
 }
 
 var (

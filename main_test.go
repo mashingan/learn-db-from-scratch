@@ -41,16 +41,19 @@ func insertDb[R any](t *testing.T, tbl *Table[R], insert ...string) {
 
 func TestInsert(t *testing.T) {
 	const testdb = "test.db"
-	os.Remove(testdb)
+	if err := os.Remove(testdb); err != nil {
+		t.Log("optional os remove error:", err)
+	}
 	table, err := NewTable[Row](testdb)
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer func() {
+		table.file.Close()
 		if err := os.Remove(testdb); err != nil {
 			t.Log("os.remove error:", err)
 		}
 	}()
-	if err != nil {
-		t.Fatal(err)
-	}
 	populateDb(t, table)
 
 	table.pages = nil
