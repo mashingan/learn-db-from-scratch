@@ -28,6 +28,7 @@ func main() {
 		}
 		line := scn.Text()
 		if !isString && strings.HasSuffix(line, ";") {
+			line = strings.TrimRight(line, ";")
 			buffer += line
 			fmt.Println("buffer:", buffer)
 			pk := prepareResult(&stmt, buffer)
@@ -119,40 +120,69 @@ func prepareResult(stmt *Statement, bfr string) PrepareKind {
 	return prepare
 }
 
+func executeInsert(stmt *Statement, pages *[][]byte) {
+	nullUname := bytes.IndexByte(stmt.row.username[:], '\x00')
+	nullEmail := bytes.IndexByte(stmt.row.email[:], '\x00')
+	fmt.Printf("insert exec row id: %d, username: %s, email: %s\n", stmt.row.id,
+		stmt.row.username[:nullUname], stmt.row.email[:nullEmail])
+	thetable[stmt.row.id] = stmt.row
+	page := []byte{}
+	var pg PageHeader
+	if len(*pages) < 1 {
+		page, pg = newPage(pages)
+	} else {
+		page = (*pages)[len(*pages)-1]
+		pg = readPageHeader(page)
+	}
+	if pg.length+uint16(rowSize) >= pg.size {
+		page, pg = newPage(pages)
+	}
+	id := make([]byte, 4)
+	binary.LittleEndian.PutUint32(id, stmt.row.id)
+	idpos := 6 + uint32(pg.rows*uint16(rowSize))
+	idoff := unsafe.Sizeof(stmt.row.id)
+	binary.LittleEndian.PutUint32(page[idpos:idpos+uint32(idoff)], stmt.row.id)
+	unamepos := idpos + uint32(unsafe.Offsetof(stmt.row.username))
+	copy(page[unamepos:unamepos+uint32(len(stmt.row.username))], stmt.row.username[:])
+	emailpos := idpos + uint32(unsafe.Offsetof(stmt.row.email))
+	copy(page[emailpos:emailpos+uint32(len(stmt.row.email))], stmt.row.email[:])
+	pg.length += uint16(rowSize)
+	binary.LittleEndian.PutUint16(page[2:4], pg.rows)
+	pg.rows++
+	binary.LittleEndian.PutUint16(page[4:6], pg.rows)
+}
+
+func executeSelect(_ *Statement, pages [][]byte) []Row {
+	rows := []Row{}
+	for _, page := range pages {
+		pg := readPageHeader(page)
+		for i := 0; i < int(pg.rows); i++ {
+			idpos := 6 + int(rowSize)*i
+			unamepos := idpos + 4
+			emailpos := unamepos + 32
+			emailsz := 255
+			row := Row{
+				id: binary.LittleEndian.Uint32(page[idpos:unamepos]),
+			}
+			copy(row.username[:], page[unamepos:emailpos])
+			copy(row.email[:], page[emailpos:emailpos+emailsz])
+			rows = append(rows, row)
+		}
+	}
+	return rows
+}
+
 func execute(stmt *Statement) {
 	switch stmt.kind {
 	case StatementInsert:
-		nullUname := bytes.IndexByte(stmt.row.username[:], '\x00')
-		nullEmail := bytes.IndexByte(stmt.row.email[:], '\x00')
-		fmt.Printf("insert exec row id: %d, username: %s, email: %s\n", stmt.row.id,
-			stmt.row.username[:nullUname], stmt.row.email[:nullEmail])
-		thetable[stmt.row.id] = stmt.row
-		page := []byte{}
-		var pg PageHeader
-		if len(pages) < 1 {
-			page, pg = newPage(&pages)
-		} else {
-			page = pages[len(pages)-1]
-			pg = readPageHeader(page)
-		}
-		if pg.length+uint16(rowSize) <= pg.size {
-			page, pg = newPage(&pages)
-		}
-		id := make([]byte, 4)
-		binary.LittleEndian.PutUint32(id, stmt.row.id)
-		idpos := 6 + uint32(pg.rows*uint16(rowSize))
-		idoff := unsafe.Sizeof(stmt.row.id)
-		binary.LittleEndian.PutUint32(page[idpos:idpos+uint32(idoff)], stmt.row.id)
-		unamepos := idpos + uint32(unsafe.Offsetof(stmt.row.username))
-		copy(page[unamepos:unamepos+uint32(len(stmt.row.username))], stmt.row.username[:])
-		emailpos := idpos + uint32(unsafe.Offsetof(stmt.row.email))
-		copy(page[emailpos:emailpos+uint32(len(stmt.row.email))], stmt.row.email[:])
-		pg.length += uint16(rowSize)
-		binary.LittleEndian.PutUint16(page[2:4], pg.rows)
-		pg.rows++
-		binary.LittleEndian.PutUint16(page[4:6], pg.rows)
+		executeInsert(stmt, &pages)
 	case StatementSelect:
-		fmt.Println("select exec")
+		for _, row := range executeSelect(stmt, pages) {
+			nullUname := bytes.IndexByte(row.username[:], '\x00')
+			nullEmail := bytes.IndexByte(row.email[:], '\x00')
+			fmt.Printf("(%d, %s, %s)\n", row.id,
+				row.username[:nullUname], row.email[:nullEmail])
+		}
 	}
 }
 
