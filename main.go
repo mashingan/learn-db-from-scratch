@@ -153,25 +153,42 @@ func (tbl *Table[R]) insertRow(stmt *Statement) (int, error) {
 	binary.LittleEndian.PutUint16(page[2:4], pg.length)
 	pg.rows++
 	binary.LittleEndian.PutUint16(page[4:6], pg.rows)
+	tbl.rows++
 	return 1, nil
+}
+
+func parseRow[R Row](page Page, offset uint32) Row {
+	unamepos := offset + 4
+	emailpos := unamepos + 32
+	emailoff := emailpos + 255
+	row := Row{
+		id: binary.LittleEndian.Uint32(page[offset : offset+4]),
+	}
+	copy(row.username[:], page[unamepos:emailpos])
+	copy(row.email[:], page[emailpos:emailoff])
+	return row
 }
 
 func (tbl *Table[R]) selectRow(_ *Statement) []Row {
 	rows := []Row{}
-	for _, page := range tbl.pages {
-		pg := readPageHeader(page)
-		for i := 0; i < int(pg.rows); i++ {
-			idpos := 6 + int(tbl.rowSize)*i
-			unamepos := idpos + 4
-			emailpos := unamepos + 32
-			emailsz := 255
-			row := Row{
-				id: binary.LittleEndian.Uint32(page[idpos:unamepos]),
-			}
-			copy(row.username[:], page[unamepos:emailpos])
-			copy(row.email[:], page[emailpos:emailpos+emailsz])
-			rows = append(rows, row)
+	cursor, found := tbl.CursorStart()
+	if !found {
+		return rows
+	}
+
+	i := 0
+	for {
+		row, found := cursor.Row()
+		if !found {
+			log.Println("not found at iterate:", i)
+			break
 		}
+		log.Println("cursor rownum:", cursor.rowNum)
+		if !cursor.Next() {
+			break
+		}
+		rows = append(rows, row)
+		i++
 	}
 	return rows
 }
@@ -179,7 +196,14 @@ func (tbl *Table[R]) selectRow(_ *Statement) []Row {
 func (tbl *Table[R]) Execute(stmt *Statement) {
 	switch stmt.kind {
 	case StatementInsert:
-		tbl.insertRow(stmt)
+		// tbl.insertRow(stmt)
+		cursor, found := tbl.CursorEnd()
+		if !found {
+			return
+		}
+		if err := cursor.SetRow(stmt.row); err != nil {
+			log.Println("error insert row:", err)
+		}
 	case StatementSelect:
 		for _, row := range tbl.selectRow(stmt) {
 			nullUname := bytes.IndexByte(row.username[:], '\x00')
@@ -260,6 +284,14 @@ type (
 		rowSize uint32
 		pages   [][]byte
 	}
+
+	Cursor[R any] struct {
+		table      *Table[R]
+		rowNum     uint32
+		pageNum    uint32
+		pageOffset uint16
+		endOfTable bool
+	}
 )
 
 func (tbl *Table[R]) fetchDbFile() error {
@@ -282,6 +314,9 @@ func (tbl *Table[R]) fetchDbFile() error {
 			log.Printf("error reading page %d: %v\n", i, err)
 			continue
 		}
+		rows := uint32(binary.LittleEndian.Uint16(page[4:6]))
+		log.Printf("page: %d, rows: %d", i, rows)
+		tbl.rows += rows
 		tbl.pages = append(tbl.pages, page)
 	}
 	return nil
@@ -339,6 +374,96 @@ func (t *Table[R]) Close() error {
 		return nil
 	}
 	return t.file.Close()
+}
+
+func (t *Table[R]) CursorAt(rownum uint32) (*Cursor[R], bool) {
+	atEnd := false
+	if rownum >= t.rows {
+		rownum = t.rows
+		atEnd = true
+	}
+	cursor := &Cursor[R]{
+		table:      t,
+		rowNum:     rownum,
+		endOfTable: atEnd,
+	}
+	var pg PageHeader
+	pgsz := uint32(unsafe.Sizeof(pg))
+	rowsPerPage := (pageSize - pgsz) / t.rowSize
+	var pagePos uint32
+	if atEnd {
+		pagePos = uint32(len(t.pages)) - 1
+	} else {
+		pagePos = (rownum / rowsPerPage)
+	}
+	if pagePos >= uint32(len(t.pages)) {
+		return cursor, false
+	}
+	cursor.pageNum = pagePos
+	cursor.pageOffset = uint16(pgsz + (rownum%rowsPerPage)*t.rowSize)
+	return cursor, true
+
+}
+
+func (t *Table[R]) CursorStart() (*Cursor[R], bool) {
+	return t.CursorAt(0)
+}
+
+func (t *Table[R]) CursorEnd() (*Cursor[R], bool) {
+	cursor, found := t.CursorAt(t.rows)
+	cursor.endOfTable = true
+	return cursor, found
+}
+
+func (c *Cursor[R]) Row() (Row, bool) {
+	if c.rowNum > c.table.rows {
+		return Row{}, false
+	}
+	row := parseRow(c.table.pages[c.pageNum], uint32(c.pageOffset))
+	return row, true
+}
+
+func (c *Cursor[R]) Next() bool {
+	if c.rowNum >= c.table.rows || c.endOfTable {
+		return false
+	}
+	cc, _ := c.table.CursorAt(c.rowNum + 1)
+	c.endOfTable = cc.endOfTable
+	c.pageNum = cc.pageNum
+	c.pageOffset = cc.pageOffset
+	c.rowNum++
+	return true
+}
+
+func (c *Cursor[R]) SetRow(row Row) error {
+	nullUname := bytes.IndexByte(row.username[:], '\x00')
+	nullEmail := bytes.IndexByte(row.email[:], '\x00')
+	fmt.Printf("insert exec row id: %d, username: %s, email: %s\n", row.id,
+		row.username[:nullUname], row.email[:nullEmail])
+	thetable[row.id] = row
+	page, pg := c.table.GetPage()
+	log.Printf("cursor then: %#v\n", c)
+	if c.pageOffset >= pg.size {
+		cc, _ := c.table.CursorEnd()
+		c.endOfTable = cc.endOfTable
+		c.pageNum = cc.pageNum
+		c.pageOffset = cc.pageOffset
+	}
+	log.Printf("cursor now: %#v\n", c)
+	unamepos := c.pageOffset + 4
+	emailpos := unamepos + 32
+	emailoff := emailpos + 255
+	binary.LittleEndian.PutUint32(page[c.pageOffset:unamepos],
+		row.id)
+	copy(page[unamepos:emailpos], row.username[:])
+	copy(page[emailpos:emailoff], row.email[:])
+	c.table.rows++
+	pg.length += uint16(c.table.rowSize)
+	binary.LittleEndian.PutUint16(page[2:4], pg.length)
+	pg.rows++
+	binary.LittleEndian.PutUint16(page[4:6], pg.rows)
+	c.table.rows++
+	return nil
 }
 
 var (
