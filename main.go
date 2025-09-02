@@ -294,7 +294,7 @@ type (
 	}
 )
 
-func (tbl *Table[R]) fetchDbFile() error {
+func (tbl *Table[R]) fetchDBFile() error {
 	if tbl.file == nil {
 		return nil
 	}
@@ -303,7 +303,7 @@ func (tbl *Table[R]) fetchDbFile() error {
 	pagesz := binary.LittleEndian.Uint16(pgsz)
 	fstat, err := tbl.file.Stat()
 	if err != nil {
-		return fmt.Errorf("fetchDbFile: %w", err)
+		return fmt.Errorf("fetchDBFile: %w", err)
 	}
 	tbl.file.Seek(0, io.SeekStart)
 	for i := 0; i*int(pagesz) < int(fstat.Size()); i++ {
@@ -334,7 +334,7 @@ func NewTable[R any](name string) (*Table[R], error) {
 		return nil, fmt.Errorf("cannot open db file: %w", err)
 	}
 	tbl.file.Seek(0, io.SeekStart)
-	if err := tbl.fetchDbFile(); err != nil {
+	if err := tbl.fetchDBFile(); err != nil {
 		return nil, fmt.Errorf("cannot read db file: %w", err)
 	}
 	tbl.GetPage()
@@ -462,7 +462,6 @@ func (c *Cursor[R]) SetRow(row Row) error {
 	binary.LittleEndian.PutUint16(page[2:4], pg.length)
 	pg.rows++
 	binary.LittleEndian.PutUint16(page[4:6], pg.rows)
-	c.table.rows++
 	return nil
 }
 
