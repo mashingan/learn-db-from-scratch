@@ -321,14 +321,14 @@ func (tbl *Table[R]) fetchDBFile() error {
 	if tbl.file == nil {
 		return nil
 	}
-	pgsz := make([]byte, 2)
-	tbl.file.ReadAt(pgsz, 0)
-	pagesz := binary.LittleEndian.Uint16(pgsz)
+	pagesz := pageSize
 	fstat, err := tbl.file.Stat()
 	if err != nil {
 		return fmt.Errorf("fetchDBFile: %w", err)
 	}
 	tbl.file.Seek(0, io.SeekStart)
+	rowsStart := uint16(szu8) + uint16(szu32) + szu16
+	rowsEnd := rowsStart + szu16
 	for i := 0; i*int(pagesz) < int(fstat.Size()); i++ {
 		log.Println("fetch db page:", i+1)
 		page := make([]byte, pagesz)
@@ -337,7 +337,7 @@ func (tbl *Table[R]) fetchDBFile() error {
 			log.Printf("error reading page %d: %v\n", i, err)
 			continue
 		}
-		rows := uint32(binary.LittleEndian.Uint16(page[4:6]))
+		rows := uint32(binary.LittleEndian.Uint16(page[rowsStart:rowsEnd]))
 		log.Printf("page: %d, rows: %d", i, rows)
 		tbl.rows += rows
 		tbl.pages = append(tbl.pages, page)
@@ -482,9 +482,9 @@ func (c *Cursor[R]) SetRow(row Row) error {
 	copy(page[emailpos:emailoff], row.email[:])
 	c.table.rows++
 	pg.length += uint16(c.table.rowSize)
-	binary.LittleEndian.PutUint16(page[2:4], pg.length)
+	binary.LittleEndian.PutUint16(page[5:7], pg.length)
 	pg.rows++
-	binary.LittleEndian.PutUint16(page[4:6], pg.rows)
+	binary.LittleEndian.PutUint16(page[7:9], pg.rows)
 	return nil
 }
 
