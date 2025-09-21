@@ -230,25 +230,21 @@ func newPage(pages *[][]byte) ([]byte, PageHeader) {
 	page := make([]byte, pageSize)
 	*pages = append(*pages, page)
 
-	parentEnd := uint32(szu8) + szu32
-	lengthEnd := szu16 + uint16(parentEnd)
-	rowsEnd := lengthEnd + szu16
 	page[0] = uint8(bitfield.New(nkIsLeaf).Value())
-	binary.LittleEndian.PutUint32(page[szu8:parentEnd], 0)
-	binary.LittleEndian.PutUint16(page[parentEnd:lengthEnd], rowsEnd)
-	binary.LittleEndian.PutUint16(page[lengthEnd:rowsEnd], 0)
-	return page, PageHeader{page[0], 0, rowsEnd, 0}
+	pho := pageHeaderOffsets()
+	binary.LittleEndian.PutUint32(page[pho.parentStart:pho.parentEnd], 0)
+	binary.LittleEndian.PutUint16(page[pho.parentEnd:pho.lengthEnd], uint16(pho.rowsEnd))
+	binary.LittleEndian.PutUint16(page[pho.lengthEnd:pho.rowsEnd], 0)
+	return page, PageHeader{page[0], 0, uint16(pho.rowsEnd), 0}
 }
 
 func readPageHeader(page []byte) PageHeader {
-	parentEnd := uint32(szu8) + szu32
-	lengthEnd := szu16 + uint16(parentEnd)
-	rowsEnd := lengthEnd + szu16
+	pho := pageHeaderOffsets()
 	return PageHeader{
 		nodeType: page[0],
-		parent:   binary.LittleEndian.Uint32(page[szu8:parentEnd]),
-		length:   binary.LittleEndian.Uint16(page[parentEnd:lengthEnd]),
-		rows:     binary.LittleEndian.Uint16(page[lengthEnd:rowsEnd]),
+		parent:   binary.LittleEndian.Uint32(page[pho.parentStart:pho.parentEnd]),
+		length:   binary.LittleEndian.Uint16(page[pho.parentEnd:pho.lengthEnd]),
+		rows:     binary.LittleEndian.Uint16(page[pho.lengthEnd:pho.rowsEnd]),
 	}
 }
 
@@ -297,6 +293,10 @@ type (
 		nodeType     byte // bitfield value of Bitfield[NodeKindo
 		parent       uint32
 		length, rows uint16
+	}
+
+	PageHeaderOffset struct {
+		parentStart, parentEnd, lengthEnd, rowsEnd int
 	}
 
 	Page         []byte
@@ -482,9 +482,10 @@ func (c *Cursor[R]) SetRow(row Row) error {
 	copy(page[emailpos:emailoff], row.email[:])
 	c.table.rows++
 	pg.length += uint16(c.table.rowSize)
-	binary.LittleEndian.PutUint16(page[5:7], pg.length)
+	pho := pageHeaderOffsets()
+	binary.LittleEndian.PutUint16(page[pho.parentEnd:pho.lengthEnd], pg.length)
 	pg.rows++
-	binary.LittleEndian.PutUint16(page[7:9], pg.rows)
+	binary.LittleEndian.PutUint16(page[pho.lengthEnd:pho.rowsEnd], pg.rows)
 	return nil
 }
 
@@ -517,4 +518,13 @@ type Node struct {
 	kind   NodeKind
 	isRoot bool
 	parent *Node
+}
+
+func pageHeaderOffsets() PageHeaderOffset {
+	pho := PageHeaderOffset{}
+	pho.parentStart = 1
+	pho.parentEnd = pho.parentStart + int(szu32)
+	pho.lengthEnd = pho.parentEnd + int(szu16)
+	pho.rowsEnd = pho.lengthEnd + int(szu16)
+	return pho
 }
