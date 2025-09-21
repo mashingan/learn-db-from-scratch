@@ -95,7 +95,7 @@ func handleMetaCommand[R any](cmd string, tbl *Table[R]) (MetaCommand, bool) {
 				log.Println("emailpos:", emailpos)
 				if unamepos >= lp || emailpos >= lp || emailpos+255 >= lp {
 					log.Println("any endpoint more than pages. ignore!")
-					continue
+					break
 				}
 				id := binary.LittleEndian.Uint32(page[idpos:unamepos])
 				fmt.Printf("row %d: (id: %d, username: %q, email: %q)\n",
