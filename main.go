@@ -10,6 +10,9 @@ import (
 	"os"
 	"strings"
 	"unsafe"
+
+	"github.com/mashingan/bitfield"
+	"golang.org/x/exp/constraints"
 )
 
 func main() {
@@ -215,25 +218,37 @@ func (tbl *Table[R]) Execute(stmt *Statement) {
 	}
 }
 
+func sizeOf[Uint constraints.Unsigned](nums ...Uint) Uint {
+	var n Uint
+	if len(nums) > 0 {
+		n = nums[0]
+	}
+	return Uint(unsafe.Sizeof(n))
+}
+
 func newPage(pages *[][]byte) ([]byte, PageHeader) {
 	page := make([]byte, pageSize)
 	*pages = append(*pages, page)
-	// size, length, rows
-	var u16 uint16
-	sz := uint16(unsafe.Sizeof(u16))
-	binary.LittleEndian.PutUint16(page[:sz], pageSize)
-	binary.LittleEndian.PutUint16(page[sz:sz+2], sz*3)
-	binary.LittleEndian.PutUint16(page[sz+2:sz+4], 0)
-	return page, PageHeader{pageSize, sz * 3, 0}
+
+	parentEnd := uint32(szu8) + szu32
+	lengthEnd := szu16 + uint16(parentEnd)
+	rowsEnd := lengthEnd + szu16
+	page[0] = uint8(bitfield.New(nkIsLeaf).Value())
+	binary.LittleEndian.PutUint32(page[szu8:parentEnd], 0)
+	binary.LittleEndian.PutUint16(page[parentEnd:lengthEnd], rowsEnd)
+	binary.LittleEndian.PutUint16(page[lengthEnd:rowsEnd], 0)
+	return page, PageHeader{page[0], 0, rowsEnd, 0}
 }
 
 func readPageHeader(page []byte) PageHeader {
-	var u16 uint16
-	sz := uint16(unsafe.Sizeof(u16))
+	parentEnd := uint32(szu8) + szu32
+	lengthEnd := szu16 + uint16(parentEnd)
+	rowsEnd := lengthEnd + szu16
 	return PageHeader{
-		size:   binary.LittleEndian.Uint16(page[:sz]),
-		length: binary.LittleEndian.Uint16(page[sz : sz*2]),
-		rows:   binary.LittleEndian.Uint16(page[sz*2 : sz*3]),
+		nodeType: page[0],
+		parent:   binary.LittleEndian.Uint32(page[szu8:parentEnd]),
+		length:   binary.LittleEndian.Uint16(page[parentEnd:lengthEnd]),
+		rows:     binary.LittleEndian.Uint16(page[lengthEnd:rowsEnd]),
 	}
 }
 
@@ -244,6 +259,12 @@ type (
 )
 
 const pageSize = 4096
+
+var (
+	szu8  = sizeOf[uint8]()
+	szu16 = sizeOf[uint16]()
+	szu32 = sizeOf[uint32]()
+)
 
 const (
 	MetaCommandSuccess MetaCommand = iota
@@ -273,7 +294,9 @@ type (
 	}
 
 	PageHeader struct {
-		size, length, rows uint16
+		nodeType     byte // bitfield value of Bitfield[NodeKindo
+		parent       uint32
+		length, rows uint16
 	}
 
 	Page         []byte
@@ -353,7 +376,7 @@ func (t *Table[R]) GetPage() (Page, PageHeader) {
 		page = t.pages[len(t.pages)-1]
 		pg = readPageHeader(page)
 	}
-	if pg.length+uint16(t.rowSize) >= pg.size {
+	if pg.length+uint16(t.rowSize) >= pageSize {
 		page, pg = newPage(&t.pages)
 	}
 	return page, pg
@@ -443,7 +466,7 @@ func (c *Cursor[R]) SetRow(row Row) error {
 	thetable[row.id] = row
 	page, pg := c.table.GetPage()
 	log.Printf("cursor then: %#v\n", c)
-	if c.pageOffset >= pg.size {
+	if c.pageOffset >= pageSize {
 		cc, _ := c.table.CursorEnd()
 		c.endOfTable = cc.endOfTable
 		c.pageNum = cc.pageNum
@@ -472,3 +495,26 @@ var (
 	}
 	thetable = map[uint32]Row{}
 )
+
+type NodeKind byte
+
+const (
+	nkIsRoot NodeKind = iota
+	nkIsLeaf
+)
+
+func (nk NodeKind) Enums() []NodeKind {
+	return []NodeKind{nkIsRoot, nkIsLeaf}
+}
+
+var nodeKinds = []string{"nkIsRoot", "nkIsLeaf"}
+
+func (nk NodeKind) String() string {
+	return nodeKinds[nk]
+}
+
+type Node struct {
+	kind   NodeKind
+	isRoot bool
+	parent *Node
+}

@@ -1,0 +1,4 @@
+github.com/mashingan/bitfield v0.1.0 h1:kUY6mM7gWEWYw5kDFJ4AKb21c69NIaWsNYvY9vx8ngs=
+github.com/mashingan/bitfield v0.1.0/go.mod h1:BMgAhwjHHSg2l0GtMheD7UPGY7NpoF2BjhMHgJ0IQDI=
+golang.org/x/exp v0.0.0-20250819193227-8b4c13bb791b h1:DXr+pvt3nC887026GRP39Ej11UATqWDmWuS99x26cD0=
+golang.org/x/exp v0.0.0-20250819193227-8b4c13bb791b/go.mod h1:4QTo5u+SEIbbKW1RacMZq1YEfOBqeXa19JeshGi+zc4=
