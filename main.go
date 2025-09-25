@@ -160,16 +160,21 @@ func (tbl *Table[R]) insertRow(stmt *Statement) (int, error) {
 	return 1, nil
 }
 
-func parseRow[R Row](page Page, offset uint32) Row {
-	unamepos := offset + 4
+func parseCell[R Row](page Page, offset uint32) Cell[R] {
+	keyend := offset + 4
+	unamepos := keyend + 4
 	emailpos := unamepos + 32
 	emailoff := emailpos + 255
+	cell := Cell[R]{
+		key: binary.LittleEndian.Uint32(page[offset:keyend]),
+	}
 	row := Row{
-		id: binary.LittleEndian.Uint32(page[offset : offset+4]),
+		id: binary.LittleEndian.Uint32(page[keyend:unamepos]),
 	}
 	copy(row.username[:], page[unamepos:emailpos])
 	copy(row.email[:], page[emailpos:emailoff])
-	return row
+	cell.row = R(row)
+	return cell
 }
 
 func (tbl *Table[R]) selectRow(_ *Statement) []Row {
@@ -281,6 +286,11 @@ type (
 	Statement struct {
 		kind StatementKind
 		row  Row
+	}
+
+	Cell[R any] struct {
+		key uint32
+		row R
 	}
 
 	Row struct {
@@ -442,8 +452,8 @@ func (c *Cursor[R]) Row() (Row, bool) {
 	if c.rowNum > c.table.rows {
 		return Row{}, false
 	}
-	row := parseRow(c.table.pages[c.pageNum], uint32(c.pageOffset))
-	return row, true
+	cell := parseCell(c.table.pages[c.pageNum], uint32(c.pageOffset))
+	return cell.row, true
 }
 
 func (c *Cursor[R]) Next() bool {
