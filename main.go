@@ -23,7 +23,7 @@ func main() {
 	var (
 		stmt Statement
 	)
-	table, err := NewTable[Row]("from-scratch.db")
+	table, err := NewTable[Cell[Row]]("from-scratch.db")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -300,7 +300,7 @@ type (
 	}
 
 	PageHeader struct {
-		nodeType     byte // bitfield value of Bitfield[NodeKindo
+		nodeType     byte // bitfield value of Bitfield[NodeKind]
 		parent       uint32
 		length, rows uint16
 	}
@@ -483,10 +483,12 @@ func (c *Cursor[R]) SetRow(row Row) error {
 		c.pageOffset = cc.pageOffset
 	}
 	log.Printf("cursor now: %#v\n", c)
-	unamepos := c.pageOffset + 4
+	keypos := c.pageOffset + 4
+	unamepos := keypos + 4
 	emailpos := unamepos + 32
 	emailoff := emailpos + 255
-	binary.LittleEndian.PutUint32(page[c.pageOffset:unamepos],
+	binary.LittleEndian.PutUint32(page[c.pageOffset:keypos], row.id)
+	binary.LittleEndian.PutUint32(page[keypos:unamepos],
 		row.id)
 	copy(page[unamepos:emailpos], row.username[:])
 	copy(page[emailpos:emailoff], row.email[:])
