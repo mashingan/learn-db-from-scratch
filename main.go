@@ -205,8 +205,9 @@ func (tbl *Table[R]) Execute(stmt *Statement) {
 	switch stmt.kind {
 	case StatementInsert:
 		// tbl.insertRow(stmt)
-		cursor, found := tbl.CursorEnd()
-		if !found {
+		cursor, existed := tbl.GetCursor(stmt.row.id)
+		if existed {
+			log.Printf("id %d is already existed\n", stmt.row.id)
 			return
 		}
 		if err := cursor.SetRow(stmt.row); err != nil {
@@ -393,23 +394,36 @@ func (t *Table[R]) GetPage() (Page, PageHeader) {
 	return page, pg
 }
 
-// func (t *Table[R]) GetCursor(id uint32) (*Cursor[R], bool) {
-// 	page, ph := t.GetPage()
-// 	_ = page
-// 	minIndex := uint32(0)
-// 	maxIndex := (pageSize - uint32(unsafe.Sizeof(ph))) / t.rowSize
+func (t *Table[R]) GetCursor(id uint32) (*Cursor[R], bool) {
+	page, _ := t.GetPage()
+	minIndex := uint32(0)
+	maxIndex := (pageSize - uint32(pageHeaderSize)) / t.rowSize
 
-// 	if id >= maxIndex {
-// 		return nil, false
-// 	}
+	if id >= maxIndex {
+		return nil, false
+	}
 
-// 	var cursor *Cursor[R]
-// 	for minIndex != maxIndex {
-// 		idx := (maxIndex + minIndex) / 2
-// 		cursor, _ = t.CursorAt(idx)
-// 	}
-// 	return nil, false
-// }
+	var cursor *Cursor[R]
+	for minIndex != maxIndex {
+		idx := (maxIndex + minIndex) / 2
+		cursor, _ = t.CursorAt(idx)
+		keyend := cursor.pageOffset + 4
+		key := binary.LittleEndian.Uint32(page[cursor.pageOffset:keyend])
+		if key == 0 {
+			return cursor, false
+		}
+		if key == idx {
+			return cursor, true
+		}
+		if key > idx {
+			minIndex = idx
+		} else {
+			maxIndex = idx
+		}
+	}
+	isCursorEmpty := true
+	return cursor, isCursorEmpty
+}
 
 func (t *Table[R]) flushPages() error {
 	t.file.Seek(0, io.SeekStart)
@@ -430,10 +444,6 @@ func (t *Table[R]) Close() error {
 
 func (t *Table[R]) CursorAt(rownum uint32) (*Cursor[R], bool) {
 	atEnd := false
-	if rownum >= t.rows {
-		rownum = t.rows
-		atEnd = true
-	}
 	cursor := &Cursor[R]{
 		table:      t,
 		rowNum:     rownum,

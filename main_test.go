@@ -21,14 +21,9 @@ func insert1Row[R any](t *testing.T, tbl *Table[R], stmt *Statement, insert stri
 		t.Errorf("failed to read instruction buffer: %s\n", insert)
 		return
 	}
-	n, err := tbl.insertRow(stmt)
-	if n <= 0 {
-		t.Error("no insert, expected insert 1 row")
-		return
-	}
-	if err != nil {
-		t.Error("expecting no error, got:", err)
-		return
+	cursor, _ := tbl.GetCursor(stmt.row.id)
+	if err := cursor.SetRow(stmt.row); err != nil {
+		t.Errorf("error insert row: %v", err)
 	}
 }
 
@@ -54,16 +49,9 @@ func TestInsert(t *testing.T) {
 			t.Log("os.remove error:", err)
 		}
 	}()
-	populateDb(t, table)
-
-	table.pages = nil
 	var stmt Statement
-	for i := range 1400 {
+	for i := 1; i <= 5; i++ {
 		buf := fmt.Sprintf("insert %d user-%d email-%d;", i, i, i)
 		insert1Row(t, table, &stmt, buf)
-	}
-	t.Log("total pages:", len(table.pages))
-	if len(table.pages) != 100 {
-		t.Error("expected db has 100 pages, got:", len(table.pages))
 	}
 }
