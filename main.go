@@ -323,6 +323,7 @@ type (
 		rowNum     uint32
 		pageNum    uint32
 		pageOffset uint16
+		existed    bool
 		endOfTable bool
 	}
 )
@@ -392,6 +393,24 @@ func (t *Table[R]) GetPage() (Page, PageHeader) {
 	return page, pg
 }
 
+// func (t *Table[R]) GetCursor(id uint32) (*Cursor[R], bool) {
+// 	page, ph := t.GetPage()
+// 	_ = page
+// 	minIndex := uint32(0)
+// 	maxIndex := (pageSize - uint32(unsafe.Sizeof(ph))) / t.rowSize
+
+// 	if id >= maxIndex {
+// 		return nil, false
+// 	}
+
+// 	var cursor *Cursor[R]
+// 	for minIndex != maxIndex {
+// 		idx := (maxIndex + minIndex) / 2
+// 		cursor, _ = t.CursorAt(idx)
+// 	}
+// 	return nil, false
+// }
+
 func (t *Table[R]) flushPages() error {
 	t.file.Seek(0, io.SeekStart)
 	for _, page := range t.pages {
@@ -420,8 +439,7 @@ func (t *Table[R]) CursorAt(rownum uint32) (*Cursor[R], bool) {
 		rowNum:     rownum,
 		endOfTable: atEnd,
 	}
-	var pg PageHeader
-	pgsz := uint32(unsafe.Sizeof(pg))
+	pgsz := uint32(pageHeaderSize)
 	rowsPerPage := (pageSize - pgsz) / t.rowSize
 	var pagePos uint32
 	if atEnd {
@@ -506,7 +524,8 @@ var (
 		StatementSelect: "SELECT",
 		StatementInsert: "INSERT",
 	}
-	thetable = map[uint32]Row{}
+	thetable       = map[uint32]Row{}
+	pageHeaderSize = uint32(szu8) + szu32 + 2*uint32(szu16)
 )
 
 type NodeKind byte
