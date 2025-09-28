@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/binary"
 	"fmt"
 	"os"
 	"testing"
@@ -11,26 +12,37 @@ func populateDb[R any](t *testing.T, tbl *Table[R]) {
 		"insert 1 mashingan hello-world;",
 		"insert 2 rdruffy thousand-sunny;",
 		"insert 5  rahshingan madoushi;",
+		"insert 10  cell dragon;",
 	}
 	insertDb(t, tbl, instr...)
 }
 
-func insert1Row[R any](t *testing.T, tbl *Table[R], stmt *Statement, insert string) {
-	pk := prepareResult(stmt, insert)
+func insert1Row[R any](t *testing.T, tbl *Table[R], insert string) {
+	var stmt Statement
+	pk := prepareResult(&stmt, insert)
 	if pk != PrepareSuccess {
 		t.Errorf("failed to read instruction buffer: %s\n", insert)
 		return
 	}
-	cursor, _ := tbl.GetCursor(stmt.row.id)
+	cursor, existed := tbl.GetCursor(stmt.row.id)
+	t.Log("cursor:", cursor)
+	if cursor != nil {
+		page := cursor.table.pages[cursor.pageNum]
+		key := binary.LittleEndian.Uint32(page[cursor.pageOffset : cursor.pageOffset+4])
+		t.Logf("key: %d, id: %d", key, stmt.row.id)
+	}
+	if existed {
+		t.Errorf("id %d is already existed\n", stmt.row.id)
+		return
+	}
 	if err := cursor.SetRow(stmt.row); err != nil {
 		t.Errorf("error insert row: %v", err)
 	}
 }
 
 func insertDb[R any](t *testing.T, tbl *Table[R], insert ...string) {
-	var stmt Statement
 	for _, inst := range insert {
-		insert1Row(t, tbl, &stmt, inst)
+		insert1Row(t, tbl, inst)
 	}
 }
 
@@ -39,7 +51,7 @@ func TestInsert(t *testing.T) {
 	if err := os.Remove(testdb); err != nil {
 		t.Log("optional os remove error:", err)
 	}
-	table, err := NewTable[Row](testdb)
+	table, err := NewTable[Cell[Row]](testdb)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,9 +61,30 @@ func TestInsert(t *testing.T) {
 			t.Log("os.remove error:", err)
 		}
 	}()
-	var stmt Statement
-	for i := 1; i <= 5; i++ {
+	for i := range 5 {
 		buf := fmt.Sprintf("insert %d user-%d email-%d;", i, i, i)
-		insert1Row(t, table, &stmt, buf)
+		insert1Row(t, table, buf)
+	}
+}
+
+func TestSelect(t *testing.T) {
+	const testdb = "test.db"
+	if err := os.Remove(testdb); err != nil {
+		t.Log("optional os remove error:", err)
+	}
+	table, err := NewTable[Cell[Row]](testdb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		table.file.Close()
+		if err := os.Remove(testdb); err != nil {
+			t.Log("os.remove error:", err)
+		}
+	}()
+	populateDb(t, table)
+	for _, row := range table.selectRow(nil) {
+		t.Logf("(%d, %s, %s)\n", row.id,
+			row.username, row.email)
 	}
 }

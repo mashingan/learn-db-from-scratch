@@ -87,7 +87,7 @@ func handleMetaCommand[R any](cmd string, tbl *Table[R]) (MetaCommand, bool) {
 			rows := binary.LittleEndian.Uint16(page[4:6])
 			for i := 0; i < int(rows); i++ {
 				row := i
-				idpos := 6 + (i * int(tbl.rowSize))
+				idpos := int(pageHeaderSize) + (i * int(tbl.rowSize))
 				unamepos := idpos + 4
 				emailpos := unamepos + 32
 				log.Println("idpos:", idpos)
@@ -136,30 +136,6 @@ func prepareResult(stmt *Statement, bfr string) PrepareKind {
 	return prepare
 }
 
-func (tbl *Table[R]) insertRow(stmt *Statement) (int, error) {
-	nullUname := bytes.IndexByte(stmt.row.username[:], '\x00')
-	nullEmail := bytes.IndexByte(stmt.row.email[:], '\x00')
-	fmt.Printf("insert exec row id: %d, username: %s, email: %s\n", stmt.row.id,
-		stmt.row.username[:nullUname], stmt.row.email[:nullEmail])
-	thetable[stmt.row.id] = stmt.row
-	page, pg := tbl.GetPage()
-	id := make([]byte, 4)
-	binary.LittleEndian.PutUint32(id, stmt.row.id)
-	idpos := 6 + uint32(pg.rows*uint16(tbl.rowSize))
-	idoff := unsafe.Sizeof(stmt.row.id)
-	binary.LittleEndian.PutUint32(page[idpos:idpos+uint32(idoff)], stmt.row.id)
-	unamepos := idpos + uint32(unsafe.Offsetof(stmt.row.username))
-	copy(page[unamepos:unamepos+uint32(len(stmt.row.username))], stmt.row.username[:])
-	emailpos := idpos + uint32(unsafe.Offsetof(stmt.row.email))
-	copy(page[emailpos:emailpos+uint32(len(stmt.row.email))], stmt.row.email[:])
-	pg.length += uint16(tbl.rowSize)
-	binary.LittleEndian.PutUint16(page[2:4], pg.length)
-	pg.rows++
-	binary.LittleEndian.PutUint16(page[4:6], pg.rows)
-	tbl.rows++
-	return 1, nil
-}
-
 func parseCell[R Row](page Page, offset uint32) Cell[R] {
 	keyend := offset + 4
 	unamepos := keyend + 4
@@ -184,19 +160,14 @@ func (tbl *Table[R]) selectRow(_ *Statement) []Row {
 		return rows
 	}
 
-	i := 0
-	for {
+	for i := 0; ; i++ {
 		row, found := cursor.Row()
-		if !found {
-			log.Println("not found at iterate:", i)
-			break
-		}
-		log.Println("cursor rownum:", cursor.rowNum)
 		if !cursor.Next() {
 			break
 		}
-		rows = append(rows, row)
-		i++
+		if found {
+			rows = append(rows, row)
+		}
 	}
 	return rows
 }
@@ -397,32 +368,30 @@ func (t *Table[R]) GetPage() (Page, PageHeader) {
 func (t *Table[R]) GetCursor(id uint32) (*Cursor[R], bool) {
 	page, _ := t.GetPage()
 	minIndex := uint32(0)
-	maxIndex := (pageSize - uint32(pageHeaderSize)) / t.rowSize
+	maxIndex := (pageSize - pageHeaderSize) / t.rowSize
 
 	if id >= maxIndex {
 		return nil, false
 	}
-
 	var cursor *Cursor[R]
-	for minIndex != maxIndex {
+	for minIndex != maxIndex && !(minIndex == id || maxIndex == id) {
 		idx := (maxIndex + minIndex) / 2
 		cursor, _ = t.CursorAt(idx)
-		keyend := cursor.pageOffset + 4
-		key := binary.LittleEndian.Uint32(page[cursor.pageOffset:keyend])
-		if key == 0 {
-			return cursor, false
-		}
-		if key == idx {
+		key := binary.LittleEndian.Uint32(page[cursor.pageOffset : cursor.pageOffset+4])
+		if key == id {
 			return cursor, true
 		}
-		if key > idx {
+		if id > idx {
 			minIndex = idx
 		} else {
 			maxIndex = idx
 		}
 	}
-	isCursorEmpty := true
-	return cursor, isCursorEmpty
+	if cursor == nil && id == 0 {
+		cursor, _ = t.CursorAt(0)
+	}
+	key := binary.LittleEndian.Uint32(page[cursor.pageOffset : cursor.pageOffset+4])
+	return cursor, key != 0
 }
 
 func (t *Table[R]) flushPages() error {
@@ -449,7 +418,7 @@ func (t *Table[R]) CursorAt(rownum uint32) (*Cursor[R], bool) {
 		rowNum:     rownum,
 		endOfTable: atEnd,
 	}
-	pgsz := uint32(pageHeaderSize)
+	pgsz := pageHeaderSize
 	rowsPerPage := (pageSize - pgsz) / t.rowSize
 	var pagePos uint32
 	if atEnd {
@@ -477,15 +446,17 @@ func (t *Table[R]) CursorEnd() (*Cursor[R], bool) {
 }
 
 func (c *Cursor[R]) Row() (Row, bool) {
-	if c.rowNum > c.table.rows {
+	cell := parseCell(c.table.pages[c.pageNum], uint32(c.pageOffset))
+	log.Println("pagenum:", c.pageNum)
+	if cell.key == 0 && (c.rowNum != 0 || c.pageNum != 0) {
 		return Row{}, false
 	}
-	cell := parseCell(c.table.pages[c.pageNum], uint32(c.pageOffset))
 	return cell.row, true
 }
 
 func (c *Cursor[R]) Next() bool {
-	if c.rowNum >= c.table.rows || c.endOfTable {
+	maxtable := (pageSize - pageHeaderSize) / c.table.rowSize
+	if c.rowNum >= maxtable {
 		return false
 	}
 	cc, _ := c.table.CursorAt(c.rowNum + 1)
@@ -503,14 +474,14 @@ func (c *Cursor[R]) SetRow(row Row) error {
 		row.username[:nullUname], row.email[:nullEmail])
 	thetable[row.id] = row
 	page, pg := c.table.GetPage()
-	log.Printf("cursor then: %#v\n", c)
+	// log.Printf("cursor then: %#v\n", c)
 	if c.pageOffset >= pageSize {
 		cc, _ := c.table.CursorEnd()
 		c.endOfTable = cc.endOfTable
 		c.pageNum = cc.pageNum
 		c.pageOffset = cc.pageOffset
 	}
-	log.Printf("cursor now: %#v\n", c)
+	// log.Printf("cursor now: %#v\n", c)
 	keypos := c.pageOffset + 4
 	unamepos := keypos + 4
 	emailpos := unamepos + 32
