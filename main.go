@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"os"
+	"strconv"
 	"strings"
 	"unsafe"
 
@@ -110,9 +112,17 @@ func handleMetaCommand[R any](cmd string, tbl *Table[R]) (MetaCommand, bool) {
 func prepareResult(stmt *Statement, bfr string) PrepareKind {
 	prepare := PrepareUnknown
 	stmtKind := StatementSelect
-	bfr = strings.ToLower(bfr)
+	bfr = strings.TrimSpace(strings.ToLower(bfr))
 	if strings.HasPrefix(bfr, "select") {
 		prepare = PrepareSuccess
+		stmt.row.id = math.MaxUint32
+		ts := strings.Split(bfr, " ")
+		if len(ts) > 1 {
+			n, err := strconv.Atoi(ts[1])
+			if err == nil {
+				stmt.row.id = uint32(n)
+			}
+		}
 	} else if strings.HasPrefix(bfr, "insert") {
 		stmtKind = StatementInsert
 		prepare = PrepareSuccess
@@ -185,12 +195,29 @@ func (tbl *Table[R]) Execute(stmt *Statement) {
 			log.Println("error insert row:", err)
 		}
 	case StatementSelect:
-		for _, row := range tbl.selectRow(stmt) {
+		showRow := func(row Row) {
 			nullUname := bytes.IndexByte(row.username[:], '\x00')
 			nullEmail := bytes.IndexByte(row.email[:], '\x00')
 			fmt.Printf("(%d, %s, %s)\n", row.id,
 				row.username[:nullUname], row.email[:nullEmail])
 
+		}
+		if stmt.row.id < math.MaxUint32 {
+			cursor, found := tbl.GetCursor(stmt.row.id)
+			if !found {
+				fmt.Printf("cursor id %d not found\n", stmt.row.id)
+				return
+			}
+			row, found := cursor.Row()
+			if !found {
+				fmt.Printf("row id %d not found\n", stmt.row.id)
+				return
+			}
+			showRow(row)
+			return
+		}
+		for _, row := range tbl.selectRow(stmt) {
+			showRow(row)
 		}
 	}
 }
@@ -447,7 +474,6 @@ func (t *Table[R]) CursorEnd() (*Cursor[R], bool) {
 
 func (c *Cursor[R]) Row() (Row, bool) {
 	cell := parseCell(c.table.pages[c.pageNum], uint32(c.pageOffset))
-	log.Println("pagenum:", c.pageNum)
 	if cell.key == 0 && (c.rowNum != 0 || c.pageNum != 0) {
 		return Row{}, false
 	}

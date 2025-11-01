@@ -87,4 +87,22 @@ func TestSelect(t *testing.T) {
 		t.Logf("(%d, %s, %s)\n", row.id,
 			row.username, row.email)
 	}
+
+	query := "select 5"
+	var stmt Statement
+	pk := prepareResult(&stmt, query)
+	if pk != PrepareSuccess {
+		t.Fatal("expected query select")
+	}
+	cursor, found := table.GetCursor(stmt.row.id)
+	if !found {
+		t.Fatal("expected to find cursor")
+	}
+	row, found := cursor.Row()
+	if !found {
+		t.Fatal("expected to find row")
+	}
+	if row.id != stmt.row.id {
+		t.Fatalf("expected to find row id %d, got %d", stmt.row.id, row.id)
+	}
 }
