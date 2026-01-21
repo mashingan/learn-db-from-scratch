@@ -196,7 +196,8 @@ func (tbl *Table[R]) Execute(stmt *Statement) {
 			return
 		}
 		if cursor == nil {
-			log.Printf("error cursor")
+			log.Printf("no available cursor for id %d\n", stmt.row.id)
+			return
 		}
 		if err := cursor.SetRow(stmt.row); err != nil {
 			log.Println("error insert row:", err)
