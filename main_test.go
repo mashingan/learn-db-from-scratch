@@ -24,8 +24,12 @@ func insert1Row[R any](t *testing.T, tbl *Table[R], insert string) {
 		t.Errorf("failed to read instruction buffer: %s\n", insert)
 		return
 	}
-	cursor, existed := tbl.GetCursor(stmt.row.id)
+	cursor, existed, err := tbl.GetCursor(stmt.row.id)
 	t.Log("cursor:", cursor)
+	if err != nil {
+		t.Error(err)
+		return
+	}
 	if cursor != nil {
 		page := cursor.table.pages[cursor.pageNum]
 		key := binary.LittleEndian.Uint32(page[cursor.pageOffset : cursor.pageOffset+4])
@@ -94,7 +98,10 @@ func TestSelect(t *testing.T) {
 	if pk != PrepareSuccess {
 		t.Fatal("expected query select")
 	}
-	cursor, found := table.GetCursor(stmt.row.id)
+	cursor, found, err := table.GetCursor(stmt.row.id)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
 	if !found {
 		t.Fatal("expected to find cursor")
 	}
@@ -105,4 +112,23 @@ func TestSelect(t *testing.T) {
 	if row.id != stmt.row.id {
 		t.Fatalf("expected to find row id %d, got %d", stmt.row.id, row.id)
 	}
+}
+
+func TestInsertErrorMaxIndex(t *testing.T) {
+	const testdb = "test.db"
+	if err := os.Remove(testdb); err != nil {
+		t.Log("optional os remove error:", err)
+	}
+	table, err := NewTable[Cell[Row]](testdb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		table.file.Close()
+		if err := os.Remove(testdb); err != nil {
+			t.Log("os.remove error:", err)
+		}
+	}()
+	buf := fmt.Sprintf("insert %d user-%d email-%d;", 13, 13, 13)
+	insert1Row(t, table, buf)
 }
