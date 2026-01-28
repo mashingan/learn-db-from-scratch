@@ -413,17 +413,13 @@ func (t *Table[R]) GetCursor(id uint32) (*Cursor[R], bool, error) {
 	}
 	var cursor *Cursor[R]
 	for minIndex != maxIndex && !(minIndex == id || maxIndex == id) {
-		idx := (maxIndex + minIndex) / 2
+		idx := minIndex
 		cursor, _ = t.CursorAt(idx)
 		key := binary.LittleEndian.Uint32(page[cursor.pageOffset : cursor.pageOffset+4])
 		if key == id {
 			return cursor, true, nil
 		}
-		if id > idx {
-			minIndex = idx
-		} else {
-			maxIndex = idx
-		}
+		minIndex++
 	}
 	if cursor == nil && id == 0 {
 		cursor, _ = t.CursorAt(0)
